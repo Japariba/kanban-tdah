@@ -4,7 +4,10 @@ console.log(process.env.NEXT_PUBLIC_SUPABASE_URL)
 
 
 import { useState } from 'react'
-import { supabase } from '../../lib/supabaseClient'
+import { getSupabaseClient } from '@/lib/supabaseClient'
+
+const supabase = getSupabaseClient()
+
 import { useRouter } from 'next/navigation'
 
 export default function LoginPage() {
