@@ -1,16 +1,16 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { getSupabaseClient } from '@/lib/supabaseClient'
-
-const supabase = getSupabaseClient()
-
+import { getSupabaseClient } from '../lib/supabaseClient'
 import {
   DragDropContext,
   Droppable,
   Draggable,
   DropResult,
 } from '@hello-pangea/dnd'
+
+const supabase = getSupabaseClient()
+
 import toast, { Toaster } from 'react-hot-toast'
 
 
