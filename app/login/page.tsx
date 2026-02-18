@@ -1,5 +1,8 @@
 'use client'
 
+console.log(process.env.NEXT_PUBLIC_SUPABASE_URL)
+
+
 import { useState } from 'react'
 import { supabase } from '../../lib/supabaseClient'
 import { useRouter } from 'next/navigation'
@@ -76,4 +79,3 @@ export default function LoginPage() {
     </main>
   )
 }
-console.log(process.env.NEXT_PUBLIC_SUPABASE_URL)
