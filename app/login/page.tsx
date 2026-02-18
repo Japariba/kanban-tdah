@@ -2,6 +2,7 @@
 
 console.log(process.env.NEXT_PUBLIC_SUPABASE_URL)
 
+export const dynamic = 'force-dynamic'
 
 import { useState } from 'react'
 import { getSupabaseClient } from '@/lib/supabaseClient'
