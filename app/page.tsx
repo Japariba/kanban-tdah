@@ -1,7 +1,6 @@
-import Link from "next/link";
+import HomeCta from "./components/HomeCta";
 
 export default function Home() {
-  
   return (
     <main className="bg-gray-950 text-white">
       {/* HERO */}
@@ -16,12 +15,11 @@ export default function Home() {
             no que realmente importa.
           </p>
 
-          <Link
-            href="/login"
-            className="bg-blue-600 hover:bg-blue-700 px-8 py-4 rounded-lg font-semibold text-lg transition"
-          >
-            Começar gratuitamente
-          </Link>
+          <HomeCta
+            loggedOutLabel="Começar gratuitamente"
+            loggedInLabel="Acessar meu Kanban"
+            className="bg-blue-600 hover:bg-blue-700 px-8 py-4 rounded-lg font-semibold text-lg transition inline-block"
+          />
         </div>
       </section>
 
@@ -110,12 +108,11 @@ export default function Home() {
           Comece a organizar sua rotina hoje
         </h2>
 
-        <Link
-          href="/login"
-          className="bg-white text-blue-600 px-8 py-4 rounded-lg font-semibold text-lg hover:bg-gray-100 transition"
-        >
-          Criar minha conta
-        </Link>
+        <HomeCta
+          loggedOutLabel="Criar minha conta"
+          loggedInLabel="Acessar meu Kanban"
+          className="bg-white text-blue-600 px-8 py-4 rounded-lg font-semibold text-lg hover:bg-gray-100 transition inline-block"
+        />
       </section>
 
       {/* FOOTER */}

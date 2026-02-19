@@ -1,17 +1,15 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { getSupabaseClient } from '../../lib/supabaseClient'
+import { useEffect, useState, useCallback } from 'react'
+import { useRouter } from 'next/navigation'
+import { getSupabaseClient } from '@/lib/supabaseClient'
 import {
   DragDropContext,
   Droppable,
   Draggable,
   DropResult,
 } from '@hello-pangea/dnd'
-
 import toast, { Toaster } from 'react-hot-toast'
-
-const supabase = getSupabaseClient()
 
 type Task = {
   id: string
@@ -19,7 +17,24 @@ type Task = {
   column: 'backlog' | 'today' | 'doing' | 'done'
 }
 
-const columns = ['backlog', 'today', 'doing', 'done'] as const
+const COLUMNS = ['backlog', 'today', 'doing', 'done'] as const
+
+const COLUMN_STYLES: Record<string, string> = {
+  backlog: 'bg-gray-900',
+  today: 'bg-yellow-900/40',
+  doing: 'bg-blue-900/40',
+  done: 'bg-green-900/40',
+}
+
+const COLUMN_TITLES: Record<string, string> = {
+  backlog: 'Backlog',
+  today: 'Hoje',
+  doing: 'Fazendo',
+  done: 'Concluído',
+}
+
+const MAX_TODAY = 3
+const MAX_DOING = 1
 
 export default function DashboardPage() {
   const [tasks, setTasks] = useState<Task[]>([])
@@ -28,57 +43,78 @@ export default function DashboardPage() {
   const [editTitle, setEditTitle] = useState('')
   const [userId, setUserId] = useState<string | null>(null)
   const [userEmail, setUserEmail] = useState<string | null>(null)
+  const [authChecked, setAuthChecked] = useState(false)
+  const [taskToDelete, setTaskToDelete] = useState<Task | null>(null)
+  const router = useRouter()
+  const supabase = getSupabaseClient()
 
-  async function handleLogout() {
-    await supabase.auth.signOut()
-    window.location.href = '/login'
-  }
+  const fetchTasks = useCallback(
+    async (uid: string) => {
+      if (!supabase) return
+      const { data, error } = await supabase
+        .from('tasks')
+        .select('*')
+        .eq('user_id', uid)
 
-
-
-  // Buscar tarefas
-  async function fetchTasks(userId: string) {
-    const { data, error } = await supabase
-      .from('tasks')
-      .select('*')
-      .eq('user_id', userId)
-
-    if (error) {
-      console.error(error)
-      return
-    }
-
-    setTasks(data as Task[])
-  }
+      if (error) {
+        console.error(error)
+        toast.error('Erro ao carregar tarefas')
+        return
+      }
+      setTasks((data as Task[]) ?? [])
+    },
+    [supabase]
+  )
 
   useEffect(() => {
+    const client = getSupabaseClient()
+    if (!client) {
+      setAuthChecked(true)
+      return
+    }
+    const auth = client.auth
     async function getUser() {
       const {
         data: { user },
-      } = await supabase.auth.getUser()
+      } = await auth.getUser()
 
       if (user) {
         setUserId(user.id)
         setUserEmail(user.email ?? null)
-        fetchTasks(user.id)
+        await fetchTasks(user.id)
       }
+      setAuthChecked(true)
     }
-
     getUser()
-  }, [])
+  }, [fetchTasks])
 
-  // Criar tarefa
+  useEffect(() => {
+    if (!authChecked) return
+    if (supabase && !userId) {
+      router.replace('/login')
+    }
+  }, [authChecked, supabase, userId, router])
+
+  async function handleLogout() {
+    if (supabase) await supabase.auth.signOut()
+    window.location.href = '/login'
+  }
+
   async function addTask() {
-    if (!userId) return
+    if (!userId || !supabase) return
+    const title = newTask.trim()
+    if (!title) {
+      toast.error('Digite o título da tarefa')
+      return
+    }
 
     const { error } = await supabase.from('tasks').insert([
       {
-        title: newTask,
+        title,
         column: 'backlog',
         user_id: userId,
       },
     ])
-
 
     if (error) {
       console.error(error)
@@ -87,22 +123,16 @@ export default function DashboardPage() {
     }
 
     toast.success('Tarefa criada')
-
-
     setNewTask('')
-    if (userId) fetchTasks(userId)
-
+    await fetchTasks(userId)
   }
 
-  // Excluir tarefa
-  async function deleteTask(id: string) {
-    const confirmDelete = confirm('Deseja realmente excluir esta tarefa?')
-    if (!confirmDelete) return
+  async function confirmDelete() {
+    const task = taskToDelete
+    setTaskToDelete(null)
+    if (!task || !userId || !supabase) return
 
-    const { error } = await supabase
-      .from('tasks')
-      .delete()
-      .eq('id', id)
+    const { error } = await supabase.from('tasks').delete().eq('id', task.id)
 
     if (error) {
       console.error(error)
@@ -111,25 +141,21 @@ export default function DashboardPage() {
     }
 
     toast.success('Tarefa removida')
-
-
-    if (userId) fetchTasks(userId)
-
+    await fetchTasks(userId)
   }
 
-  // Editar tarefa
   function openEditModal(task: Task) {
     setEditingTask(task)
     setEditTitle(task.title)
   }
 
   async function saveEdit() {
-    if (!editingTask) return
+    if (!editingTask || !supabase) return
     if (!editTitle.trim()) return
 
     const { error } = await supabase
       .from('tasks')
-      .update({ title: editTitle })
+      .update({ title: editTitle.trim() })
       .eq('id', editingTask.id)
 
     if (error) {
@@ -139,40 +165,39 @@ export default function DashboardPage() {
     }
 
     toast.success('Tarefa atualizada')
-
-
     setEditingTask(null)
     setEditTitle('')
-    if (userId) fetchTasks(userId)
-
+    if (userId) await fetchTasks(userId)
   }
 
-
-
-  // Drag end
   async function onDragEnd(result: DropResult) {
-    if (!result.destination) return
+    if (!result.destination || !supabase || !userId) return
 
     const taskId = result.draggableId
     const newColumn = result.destination.droppableId as Task['column']
 
-    // Regra today
     if (newColumn === 'today') {
       const todayCount = tasks.filter((t) => t.column === 'today').length
-      if (todayCount >= 3) {
-        alert('Você já tem 3 tarefas no Hoje.')
+      if (todayCount >= MAX_TODAY) {
+        toast.error('Você já tem 3 tarefas no Hoje.')
         return
       }
     }
 
-    // Regra doing
     if (newColumn === 'doing') {
       const doingCount = tasks.filter((t) => t.column === 'doing').length
-      if (doingCount >= 1) {
-        alert('Você já está executando uma tarefa.')
+      if (doingCount >= MAX_DOING) {
+        toast.error('Você já está executando uma tarefa.')
         return
       }
     }
+
+    const previousTasks = tasks
+    setTasks((prev) =>
+      prev.map((t) =>
+        t.id === taskId ? { ...t, column: newColumn } : t
+      )
+    )
 
     const { error } = await supabase
       .from('tasks')
@@ -181,89 +206,80 @@ export default function DashboardPage() {
 
     if (error) {
       console.error(error)
+      setTasks(previousTasks)
+      toast.error('Erro ao mover tarefa')
       return
     }
-
-    if (userId) fetchTasks(userId)
-
   }
-  if (!userId) {
+
+  if (!supabase) {
     return (
-      <main className="p-6 text-white">
+      <main className="min-h-screen bg-gray-950 text-white flex items-center justify-center p-6">
+        <p>Configuração indisponível. Verifique as variáveis de ambiente.</p>
+      </main>
+    )
+  }
+
+  if (!authChecked || !userId) {
+    return (
+      <main className="min-h-screen bg-gray-950 text-white flex items-center justify-center p-6">
         <p>Redirecionando para login...</p>
       </main>
     )
   }
 
   return (
-  <main className="min-h-screen bg-gray-950 text-white">
-    <Toaster position="top-right" />
+    <main className="min-h-screen bg-gray-950 text-white">
+      <Toaster position="top-right" />
 
-    {/* HEADER */}
-    <header className="border-b border-gray-800 bg-gray-900 px-6 py-4 flex justify-between items-center">
-      <h1 className="text-xl font-semibold">
-        Meu Foco do Dia
-      </h1>
+      <header className="border-b border-gray-800 bg-gray-900 px-6 py-4 flex justify-between items-center">
+        <h1 className="text-xl font-semibold">Meu Foco do Dia</h1>
+        <div className="flex items-center gap-4">
+          <span className="text-sm text-gray-300">{userEmail}</span>
+          <button
+            onClick={handleLogout}
+            className="bg-red-500 hover:bg-red-600 px-4 py-2 rounded-lg text-sm font-medium transition"
+          >
+            Sair
+          </button>
+        </div>
+      </header>
 
-      <div className="flex items-center gap-4">
-        <span className="text-sm text-gray-300">
-          {userEmail}
-        </span>
+      <section className="p-6">
+        <div className="mb-8 flex gap-2 flex-wrap items-end">
+          <div>
+            <label htmlFor="new-task-input" className="sr-only">
+              Nova tarefa
+            </label>
+            <input
+              id="new-task-input"
+              className="bg-gray-800 border border-gray-700 p-3 rounded-lg w-72 text-white placeholder-gray-400"
+              placeholder="Nova tarefa..."
+              value={newTask}
+              onChange={(e) => setNewTask(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && addTask()}
+            />
+          </div>
+          <button
+            onClick={addTask}
+            className="bg-blue-600 hover:bg-blue-700 px-5 py-3 rounded-lg font-medium transition"
+          >
+            Adicionar
+          </button>
+        </div>
 
-        <button
-          onClick={handleLogout}
-          className="bg-red-500 hover:bg-red-600 px-4 py-2 rounded-lg text-sm font-medium transition"
-        >
-          Sair
-        </button>
-      </div>
-    </header>
-
-    {/* CONTEÚDO */}
-    <section className="p-6">
-      {/* Criar tarefa */}
-      <div className="mb-8 flex gap-2">
-        <input
-          className="bg-gray-800 border border-gray-700 p-3 rounded-lg w-72 text-white placeholder-gray-400"
-          placeholder="Nova tarefa..."
-          value={newTask}
-          onChange={(e) => setNewTask(e.target.value)}
-        />
-        <button
-          onClick={addTask}
-          className="bg-blue-600 hover:bg-blue-700 px-5 rounded-lg font-medium transition"
-        >
-          Adicionar
-        </button>
-      </div>
-
-      <DragDropContext onDragEnd={onDragEnd}>
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-          {columns.map((col) => {
-            const columnStyles: Record<string, string> = {
-              backlog: 'bg-gray-900',
-              today: 'bg-yellow-900/40',
-              doing: 'bg-blue-900/40',
-              done: 'bg-green-900/40',
-            }
-
-            const columnTitles: Record<string, string> = {
-              backlog: 'Backlog',
-              today: 'Hoje',
-              doing: 'Fazendo',
-              done: 'Concluído',
-            }
-
-            return (
+        <DragDropContext onDragEnd={onDragEnd}>
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+            {COLUMNS.map((col) => (
               <Droppable droppableId={col} key={col}>
                 {(provided) => (
                   <div
                     ref={provided.innerRef}
                     {...provided.droppableProps}
-                    className={`${columnStyles[col]} p-4 rounded-2xl min-h-[400px] border border-gray-800`}
+                    className={`${COLUMN_STYLES[col]} p-4 rounded-2xl min-h-[400px] border border-gray-800`}
                   >
                     <h2 className="font-semibold text-lg mb-4 text-white">
-                      {columnTitles[col]}
+                      {COLUMN_TITLES[col]}
                     </h2>
 
                     {tasks
@@ -284,18 +300,18 @@ export default function DashboardPage() {
                               <div className="font-medium mb-3">
                                 {task.title}
                               </div>
-
                               <div className="flex gap-2 text-sm">
                                 <button
                                   onClick={() => openEditModal(task)}
                                   className="px-3 py-1 bg-blue-600 rounded hover:bg-blue-700"
+                                  aria-label={`Editar tarefa: ${task.title}`}
                                 >
                                   Editar
                                 </button>
-
                                 <button
-                                  onClick={() => deleteTask(task.id)}
+                                  onClick={() => setTaskToDelete(task)}
                                   className="px-3 py-1 bg-red-600 rounded hover:bg-red-700"
+                                  aria-label={`Excluir tarefa: ${task.title}`}
                                 >
                                   Excluir
                                 </button>
@@ -304,50 +320,85 @@ export default function DashboardPage() {
                           )}
                         </Draggable>
                       ))}
-
                     {provided.placeholder}
                   </div>
                 )}
               </Droppable>
-            )
-          })}
-        </div>
-      </DragDropContext>
+            ))}
+          </div>
+        </DragDropContext>
 
-      {/* MODAL */}
-      {editingTask && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center">
-          <div className="bg-gray-900 p-6 rounded-2xl shadow w-80 border border-gray-800">
-            <h2 className="text-lg font-semibold mb-4">
-              Editar tarefa
-            </h2>
-
-            <input
-              className="bg-gray-800 border border-gray-700 p-3 rounded w-full mb-4 text-white"
-              value={editTitle}
-              onChange={(e) => setEditTitle(e.target.value)}
-            />
-
-            <div className="flex justify-end gap-2">
-              <button
-                onClick={() => setEditingTask(null)}
-                className="px-4 py-2 bg-gray-700 rounded"
-              >
-                Cancelar
-              </button>
-
-              <button
-                onClick={saveEdit}
-                className="px-4 py-2 bg-blue-600 rounded"
-              >
-                Salvar
-              </button>
+        {editingTask && (
+          <div
+            className="fixed inset-0 bg-black/60 flex items-center justify-center z-10"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="edit-task-title"
+          >
+            <div className="bg-gray-900 p-6 rounded-2xl shadow w-80 border border-gray-800">
+              <h2 id="edit-task-title" className="text-lg font-semibold mb-4">
+                Editar tarefa
+              </h2>
+              <label htmlFor="edit-task-input" className="sr-only">
+                Título da tarefa
+              </label>
+              <input
+                id="edit-task-input"
+                className="bg-gray-800 border border-gray-700 p-3 rounded w-full mb-4 text-white"
+                value={editTitle}
+                onChange={(e) => setEditTitle(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && saveEdit()}
+              />
+              <div className="flex justify-end gap-2">
+                <button
+                  onClick={() => setEditingTask(null)}
+                  className="px-4 py-2 bg-gray-700 rounded hover:bg-gray-600"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={saveEdit}
+                  className="px-4 py-2 bg-blue-600 rounded hover:bg-blue-700"
+                >
+                  Salvar
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
-    </section>
-  </main>
-)
+        )}
 
+        {taskToDelete && (
+          <div
+            className="fixed inset-0 bg-black/60 flex items-center justify-center z-10"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-task-title"
+          >
+            <div className="bg-gray-900 p-6 rounded-2xl shadow w-80 border border-gray-800">
+              <h2 id="delete-task-title" className="text-lg font-semibold mb-2">
+                Excluir tarefa
+              </h2>
+              <p className="text-gray-300 mb-4">
+                Deseja realmente excluir &quot;{taskToDelete.title}&quot;?
+              </p>
+              <div className="flex justify-end gap-2">
+                <button
+                  onClick={() => setTaskToDelete(null)}
+                  className="px-4 py-2 bg-gray-700 rounded hover:bg-gray-600"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={confirmDelete}
+                  className="px-4 py-2 bg-red-600 rounded hover:bg-red-700"
+                >
+                  Excluir
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </section>
+    </main>
+  )
 }
