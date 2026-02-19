@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
+import Link from 'next/link'
 import { getSupabaseClient } from '@/lib/supabaseClient'
 import {
   DragDropContext,
@@ -10,12 +11,12 @@ import {
   DropResult,
 } from '@hello-pangea/dnd'
 import toast, { Toaster } from 'react-hot-toast'
-
-type Task = {
-  id: string
-  title: string
-  column: 'backlog' | 'today' | 'doing' | 'done'
-}
+import type { Task, Subtask } from '@/lib/types'
+import { POINTS_BY_SIZE } from '@/lib/types'
+import TaskCard from './components/TaskCard'
+import FocusTimer from './components/FocusTimer'
+import DailyNotesSection from './components/DailyNotesSection'
+import FocusNotifications from './components/FocusNotifications'
 
 const COLUMNS = ['backlog', 'today', 'doing', 'done'] as const
 
@@ -36,15 +37,35 @@ const COLUMN_TITLES: Record<string, string> = {
 const MAX_TODAY = 3
 const MAX_DOING = 1
 
+function normalizeTask(t: Record<string, unknown>): Task {
+  return {
+    id: t.id as string,
+    title: t.title as string,
+    column: (t.column as Task['column']) ?? 'backlog',
+    priority: (t.priority as Task['priority']) ?? 'medium',
+    size: (t.size as Task['size']) ?? 'medium',
+    completed_at: t.completed_at as string | null | undefined,
+    user_id: t.user_id as string | undefined,
+  }
+}
+
 export default function DashboardPage() {
   const [tasks, setTasks] = useState<Task[]>([])
+  const [subtasksByTask, setSubtasksByTask] = useState<Record<string, Subtask[]>>({})
   const [newTask, setNewTask] = useState('')
+  const [newTaskPriority, setNewTaskPriority] = useState<Task['priority']>('medium')
+  const [newTaskSize, setNewTaskSize] = useState<Task['size']>('medium')
   const [editingTask, setEditingTask] = useState<Task | null>(null)
   const [editTitle, setEditTitle] = useState('')
+  const [editPriority, setEditPriority] = useState<Task['priority']>('medium')
+  const [editSize, setEditSize] = useState<Task['size']>('medium')
   const [userId, setUserId] = useState<string | null>(null)
   const [userEmail, setUserEmail] = useState<string | null>(null)
+  const [userStats, setUserStats] = useState({ points: 0, streak_days: 0 })
   const [authChecked, setAuthChecked] = useState(false)
   const [taskToDelete, setTaskToDelete] = useState<Task | null>(null)
+  const [focusTask, setFocusTask] = useState<Task | null>(null)
+  const [focusModeOnly, setFocusModeOnly] = useState(false)
   const router = useRouter()
   const supabase = getSupabaseClient()
 
@@ -55,13 +76,41 @@ export default function DashboardPage() {
         .from('tasks')
         .select('*')
         .eq('user_id', uid)
-
       if (error) {
         console.error(error)
         toast.error('Erro ao carregar tarefas')
         return
       }
-      setTasks((data as Task[]) ?? [])
+      setTasks(((data as Record<string, unknown>[]) ?? []).map(normalizeTask))
+
+      const taskIds = ((data as { id: string }[]) ?? []).map((t) => t.id)
+      if (taskIds.length === 0) {
+        setSubtasksByTask({})
+        return
+      }
+      const { data: subData } = await supabase
+        .from('subtasks')
+        .select('*')
+        .in('task_id', taskIds)
+      const byTask: Record<string, Subtask[]> = {}
+      for (const st of (subData as Subtask[]) ?? []) {
+        if (!byTask[st.task_id]) byTask[st.task_id] = []
+        byTask[st.task_id].push(st)
+      }
+      setSubtasksByTask(byTask)
+    },
+    [supabase]
+  )
+
+  const fetchUserStats = useCallback(
+    async (uid: string) => {
+      if (!supabase) return
+      const { data } = await supabase
+        .from('user_stats')
+        .select('points, streak_days')
+        .eq('user_id', uid)
+        .maybeSingle()
+      if (data) setUserStats({ points: data.points ?? 0, streak_days: data.streak_days ?? 0 })
     },
     [supabase]
   )
@@ -82,11 +131,12 @@ export default function DashboardPage() {
         setUserId(user.id)
         setUserEmail(user.email ?? null)
         await fetchTasks(user.id)
+        await fetchUserStats(user.id)
       }
       setAuthChecked(true)
     }
     getUser()
-  }, [fetchTasks])
+  }, [fetchTasks, fetchUserStats])
 
   useEffect(() => {
     if (!authChecked) return
@@ -113,6 +163,8 @@ export default function DashboardPage() {
         title,
         column: 'backlog',
         user_id: userId,
+        priority: newTaskPriority,
+        size: newTaskSize,
       },
     ])
 
@@ -125,6 +177,37 @@ export default function DashboardPage() {
     toast.success('Tarefa criada')
     setNewTask('')
     await fetchTasks(userId)
+  }
+
+  async function addSubtask(taskId: string, title: string) {
+    if (!supabase) return
+    const { error } = await supabase.from('subtasks').insert([{ task_id: taskId, title }])
+    if (error) {
+      console.error(error)
+      toast.error('Erro ao adicionar subtarefa')
+      return
+    }
+    const task = tasks.find((t) => t.id === taskId)
+    if (task) await fetchTasks(userId!)
+  }
+
+  async function toggleSubtask(subtaskId: string, done: boolean) {
+    if (!supabase) return
+    const { error } = await supabase.from('subtasks').update({ done }).eq('id', subtaskId)
+    if (error) {
+      console.error(error)
+      return
+    }
+    await fetchTasks(userId!)
+  }
+
+  async function handleFocusComplete(taskId: string, durationMinutes: number) {
+    if (!userId || !supabase) return
+    const { error } = await supabase.from('focus_sessions').insert([
+      { task_id: taskId, user_id: userId, duration_minutes: durationMinutes },
+    ])
+    if (error) console.error(error)
+    setFocusTask(null)
   }
 
   async function confirmDelete() {
@@ -147,6 +230,8 @@ export default function DashboardPage() {
   function openEditModal(task: Task) {
     setEditingTask(task)
     setEditTitle(task.title)
+    setEditPriority(task.priority ?? 'medium')
+    setEditSize(task.size ?? 'medium')
   }
 
   async function saveEdit() {
@@ -155,7 +240,11 @@ export default function DashboardPage() {
 
     const { error } = await supabase
       .from('tasks')
-      .update({ title: editTitle.trim() })
+      .update({
+        title: editTitle.trim(),
+        priority: editPriority,
+        size: editSize,
+      })
       .eq('id', editingTask.id)
 
     if (error) {
@@ -199,9 +288,14 @@ export default function DashboardPage() {
       )
     )
 
+    const task = tasks.find((t) => t.id === taskId)
+    const isMovingToDone = newColumn === 'done'
+    const updatePayload: Record<string, unknown> = { column: newColumn }
+    if (isMovingToDone) updatePayload.completed_at = new Date().toISOString()
+
     const { error } = await supabase
       .from('tasks')
-      .update({ column: newColumn })
+      .update(updatePayload)
       .eq('id', taskId)
 
     if (error) {
@@ -210,6 +304,35 @@ export default function DashboardPage() {
       toast.error('Erro ao mover tarefa')
       return
     }
+
+    if (isMovingToDone && task && userId && supabase) {
+      const size = task.size ?? 'medium'
+      const points = POINTS_BY_SIZE[size]
+      const today = new Date().toISOString().slice(0, 10)
+      const { data: stats } = await supabase
+        .from('user_stats')
+        .select('points, streak_days, last_activity_date')
+        .eq('user_id', userId)
+        .maybeSingle()
+      const prevPoints = (stats?.points as number) ?? 0
+      const prevStreak = (stats?.streak_days as number) ?? 0
+      const lastDate = stats?.last_activity_date as string | null
+      const yesterday = new Date(Date.now() - 864e5).toISOString().slice(0, 10)
+      const newStreak = lastDate === yesterday ? prevStreak + 1 : lastDate === today ? prevStreak : 1
+      await supabase.from('user_stats').upsert(
+        {
+          user_id: userId,
+          points: prevPoints + points,
+          streak_days: newStreak,
+          last_activity_date: today,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'user_id' }
+      )
+      await fetchUserStats(userId)
+    }
+
+    if (userId) await fetchTasks(userId)
   }
 
   if (!supabase) {
@@ -221,20 +344,39 @@ export default function DashboardPage() {
   }
 
   if (!authChecked || !userId) {
-    return (
-      <main className="min-h-screen bg-gray-950 text-white flex items-center justify-center p-6">
-        <p>Redirecionando para login...</p>
-      </main>
-    )
+    return <main className="min-h-screen bg-gray-950" />
   }
 
   return (
     <main className="min-h-screen bg-gray-950 text-white">
       <Toaster position="top-right" />
 
-      <header className="border-b border-gray-800 bg-gray-900 px-6 py-4 flex justify-between items-center">
+      <header className="border-b border-gray-800 bg-gray-900 px-6 py-4 flex flex-wrap justify-between items-center gap-4">
         <h1 className="text-xl font-semibold">Meu Foco do Dia</h1>
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-3 flex-wrap">
+          <span className="text-sm text-amber-400" title="Pontos">
+            ★ {userStats.points}
+          </span>
+          {userStats.streak_days > 0 && (
+            <span className="text-sm text-emerald-400" title="Sequência de dias">
+              🔥 {userStats.streak_days} dias
+            </span>
+          )}
+          <Link
+            href="/history"
+            className="text-sm text-gray-300 hover:text-white underline"
+          >
+            Histórico
+          </Link>
+          <button
+            type="button"
+            onClick={() => setFocusModeOnly((v) => !v)}
+            className={`px-3 py-1.5 rounded-lg text-sm font-medium transition ${
+              focusModeOnly ? 'bg-emerald-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+            }`}
+          >
+            Modo foco
+          </button>
           <span className="text-sm text-gray-300">{userEmail}</span>
           <button
             onClick={handleLogout}
@@ -246,6 +388,13 @@ export default function DashboardPage() {
       </header>
 
       <section className="p-6">
+        <DailyNotesSection userId={userId} getSupabase={getSupabaseClient} />
+
+        <FocusNotifications
+          todayCount={tasks.filter((t) => t.column === 'today').length}
+          doingCount={tasks.filter((t) => t.column === 'doing').length}
+        />
+
         <div className="mb-8 flex gap-2 flex-wrap items-end">
           <div>
             <label htmlFor="new-task-input" className="sr-only">
@@ -260,6 +409,26 @@ export default function DashboardPage() {
               onKeyDown={(e) => e.key === 'Enter' && addTask()}
             />
           </div>
+          <select
+            value={newTaskPriority}
+            onChange={(e) => setNewTaskPriority(e.target.value as Task['priority'])}
+            className="bg-gray-800 border border-gray-700 p-3 rounded-lg text-white text-sm"
+            aria-label="Prioridade"
+          >
+            <option value="low">Baixa</option>
+            <option value="medium">Média</option>
+            <option value="high">Alta</option>
+          </select>
+          <select
+            value={newTaskSize}
+            onChange={(e) => setNewTaskSize(e.target.value as Task['size'])}
+            className="bg-gray-800 border border-gray-700 p-3 rounded-lg text-white text-sm"
+            aria-label="Tamanho"
+          >
+            <option value="small">Pequena (5 pts)</option>
+            <option value="medium">Média (10 pts)</option>
+            <option value="large">Grande (20 pts)</option>
+          </select>
           <button
             onClick={addTask}
             className="bg-blue-600 hover:bg-blue-700 px-5 py-3 rounded-lg font-medium transition"
@@ -269,8 +438,8 @@ export default function DashboardPage() {
         </div>
 
         <DragDropContext onDragEnd={onDragEnd}>
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-            {COLUMNS.map((col) => (
+          <div className={`grid gap-6 ${focusModeOnly ? 'grid-cols-1 md:grid-cols-2' : 'grid-cols-1 md:grid-cols-4'}`}>
+            {(focusModeOnly ? (['today', 'doing'] as const) : COLUMNS).map((col) => (
               <Droppable droppableId={col} key={col}>
                 {(provided) => (
                   <div
@@ -295,27 +464,17 @@ export default function DashboardPage() {
                               ref={provided.innerRef}
                               {...provided.draggableProps}
                               {...provided.dragHandleProps}
-                              className="bg-gray-800 p-4 rounded-xl shadow mb-3 border border-gray-700"
                             >
-                              <div className="font-medium mb-3">
-                                {task.title}
-                              </div>
-                              <div className="flex gap-2 text-sm">
-                                <button
-                                  onClick={() => openEditModal(task)}
-                                  className="px-3 py-1 bg-blue-600 rounded hover:bg-blue-700"
-                                  aria-label={`Editar tarefa: ${task.title}`}
-                                >
-                                  Editar
-                                </button>
-                                <button
-                                  onClick={() => setTaskToDelete(task)}
-                                  className="px-3 py-1 bg-red-600 rounded hover:bg-red-700"
-                                  aria-label={`Excluir tarefa: ${task.title}`}
-                                >
-                                  Excluir
-                                </button>
-                              </div>
+                              <TaskCard
+                                task={task}
+                                subtasks={subtasksByTask[task.id] ?? []}
+                                onEdit={openEditModal}
+                                onDelete={setTaskToDelete}
+                                onStartFocus={col === 'doing' ? setFocusTask : undefined}
+                                onAddSubtask={addSubtask}
+                                onToggleSubtask={toggleSubtask}
+                                isDoingColumn={col === 'doing'}
+                              />
                             </div>
                           )}
                         </Draggable>
@@ -335,7 +494,7 @@ export default function DashboardPage() {
             aria-modal="true"
             aria-labelledby="edit-task-title"
           >
-            <div className="bg-gray-900 p-6 rounded-2xl shadow w-80 border border-gray-800">
+            <div className="bg-gray-900 p-6 rounded-2xl shadow w-96 border border-gray-800">
               <h2 id="edit-task-title" className="text-lg font-semibold mb-4">
                 Editar tarefa
               </h2>
@@ -344,11 +503,37 @@ export default function DashboardPage() {
               </label>
               <input
                 id="edit-task-input"
-                className="bg-gray-800 border border-gray-700 p-3 rounded w-full mb-4 text-white"
+                className="bg-gray-800 border border-gray-700 p-3 rounded w-full mb-3 text-white"
                 value={editTitle}
                 onChange={(e) => setEditTitle(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && saveEdit()}
               />
+              <div className="flex gap-4 mb-4">
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Prioridade</label>
+                  <select
+                    value={editPriority}
+                    onChange={(e) => setEditPriority(e.target.value as Task['priority'])}
+                    className="bg-gray-800 border border-gray-700 p-2 rounded w-full text-white text-sm"
+                  >
+                    <option value="low">Baixa</option>
+                    <option value="medium">Média</option>
+                    <option value="high">Alta</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Tamanho (pontos)</label>
+                  <select
+                    value={editSize}
+                    onChange={(e) => setEditSize(e.target.value as Task['size'])}
+                    className="bg-gray-800 border border-gray-700 p-2 rounded w-full text-white text-sm"
+                  >
+                    <option value="small">Pequena (5)</option>
+                    <option value="medium">Média (10)</option>
+                    <option value="large">Grande (20)</option>
+                  </select>
+                </div>
+              </div>
               <div className="flex justify-end gap-2">
                 <button
                   onClick={() => setEditingTask(null)}
@@ -365,6 +550,14 @@ export default function DashboardPage() {
               </div>
             </div>
           </div>
+        )}
+
+        {focusTask && (
+          <FocusTimer
+            task={focusTask}
+            onClose={() => setFocusTask(null)}
+            onComplete={handleFocusComplete}
+          />
         )}
 
         {taskToDelete && (
