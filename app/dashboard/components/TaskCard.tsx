@@ -1,8 +1,25 @@
 'use client'
 
 import { useState } from 'react'
+import confetti from 'canvas-confetti'
 import type { Task, Subtask } from '@/lib/types'
 import { PRIORITY_BORDER_COLORS } from '@/lib/types'
+
+function triggerSubtaskReward() {
+  confetti({
+    particleCount: 40,
+    spread: 60,
+    origin: { y: 0.6 },
+    colors: ['#10b981', '#34d399', '#fbbf24', '#f59e0b'],
+  })
+  try {
+    const audio = new Audio('data:audio/wav;base64,UklGRl9vT19XQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YUtvT18=')
+    audio.volume = 0.4
+    audio.play().catch(() => {})
+  } catch {
+    // ignore
+  }
+}
 
 type TaskCardProps = {
   task: Task
@@ -32,6 +49,7 @@ export default function TaskCard({
   const progress = total > 0 ? Math.round((doneCount / total) * 100) : 0
   const [newSubtaskTitle, setNewSubtaskTitle] = useState('')
   const [showSubtaskInput, setShowSubtaskInput] = useState(false)
+  const [subtasksExpanded, setSubtasksExpanded] = useState(false)
 
   return (
     <div
@@ -41,36 +59,53 @@ export default function TaskCard({
 
       {total > 0 && (
         <div className="mb-2">
-          <div className="flex justify-between text-xs text-gray-400 mb-1">
+          <button
+            type="button"
+            onClick={() => setSubtasksExpanded((e) => !e)}
+            className="w-full flex items-center justify-between text-xs text-gray-400 mb-1 hover:text-gray-300 transition rounded px-1 py-0.5 -mx-1"
+            aria-expanded={subtasksExpanded}
+            aria-label={subtasksExpanded ? 'Recolher subtarefas' : 'Expandir subtarefas'}
+          >
             <span>Subtarefas</span>
-            <span>{doneCount}/{total}</span>
-          </div>
+            <span className="flex items-center gap-1.5">
+              <span>{doneCount}/{total}</span>
+              <span
+                className={`inline-block transition-transform ${subtasksExpanded ? 'rotate-180' : ''}`}
+                aria-hidden
+              >
+                ▼
+              </span>
+            </span>
+          </button>
           <div className="h-1.5 bg-gray-700 rounded-full overflow-hidden">
             <div
               className="h-full bg-blue-500 rounded-full transition-all"
               style={{ width: `${progress}%` }}
             />
           </div>
-          <ul className="mt-1.5 space-y-1 text-sm text-gray-300">
-            {subtasks.slice(0, 4).map((st) => (
-              <li key={st.id} className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => onToggleSubtask(st.id, !st.done)}
-                  className="flex-shrink-0 w-4 h-4 rounded border border-gray-500 flex items-center justify-center hover:bg-gray-600"
-                  aria-label={st.done ? 'Desmarcar' : 'Concluir'}
-                >
-                  {st.done && <span className="text-green-400 text-xs">✓</span>}
-                </button>
-                <span className={st.done ? 'line-through text-gray-500' : ''}>
-                  {st.title}
-                </span>
-              </li>
-            ))}
-            {subtasks.length > 4 && (
-              <li className="text-gray-500 text-xs">+{subtasks.length - 4} mais</li>
-            )}
-          </ul>
+          {subtasksExpanded && (
+            <ul className="mt-1.5 space-y-1 text-sm text-gray-300 max-h-48 overflow-y-auto">
+              {subtasks.map((st) => (
+                <li key={st.id} className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const newDone = !st.done
+                      onToggleSubtask(st.id, newDone)
+                      if (newDone) triggerSubtaskReward()
+                    }}
+                    className="flex-shrink-0 w-4 h-4 rounded border border-gray-500 flex items-center justify-center hover:bg-gray-600"
+                    aria-label={st.done ? 'Desmarcar' : 'Concluir'}
+                  >
+                    {st.done && <span className="text-green-400 text-xs">✓</span>}
+                  </button>
+                  <span className={st.done ? 'line-through text-gray-500' : ''}>
+                    {st.title}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       )}
 

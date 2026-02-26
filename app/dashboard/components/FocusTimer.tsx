@@ -16,7 +16,15 @@ export default function FocusTimer({ task, onClose, onComplete }: FocusTimerProp
   const [isRunning, setIsRunning] = useState(false)
   const [ended, setEnded] = useState(false)
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const audioRef = useRef<HTMLAudioElement | null>(null)
+
+  // Modo full-screen real: esconder o resto da interface e travar scroll
+  useEffect(() => {
+    const prevOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      document.body.style.overflow = prevOverflow
+    }
+  }, [])
 
   useEffect(() => {
     if (!isRunning) return
@@ -57,12 +65,12 @@ export default function FocusTimer({ task, onClose, onComplete }: FocusTimerProp
 
   return (
     <div
-      className="fixed inset-0 bg-black/70 flex items-center justify-center z-20"
+      className="fixed inset-0 bg-gray-950 flex items-center justify-center z-50"
       role="dialog"
       aria-modal="true"
       aria-labelledby="focus-timer-title"
     >
-      <div className="bg-gray-900 border border-gray-700 rounded-2xl p-8 max-w-sm w-full mx-4 shadow-xl">
+      <div className="bg-gray-900 border border-gray-700 rounded-2xl p-8 max-w-sm w-full mx-4 shadow-xl ring-2 ring-emerald-500/30">
         <h2 id="focus-timer-title" className="text-lg font-semibold mb-1">
           Foco: {task.title}
         </h2>

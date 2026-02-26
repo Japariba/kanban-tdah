@@ -1,8 +1,9 @@
 'use client'
 
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { getSupabaseClient } from '@/lib/supabaseClient'
 import {
   DragDropContext,
@@ -12,7 +13,7 @@ import {
 } from '@hello-pangea/dnd'
 import toast, { Toaster } from 'react-hot-toast'
 import type { Task, Subtask } from '@/lib/types'
-import { POINTS_BY_SIZE } from '@/lib/types'
+import { POINTS_BY_SIZE, ESTIMATED_TIME_OPTIONS, FREE_BACKLOG_MAX_TASKS } from '@/lib/types'
 import TaskCard from './components/TaskCard'
 import FocusTimer from './components/FocusTimer'
 import DailyNotesSection from './components/DailyNotesSection'
@@ -46,74 +47,84 @@ function normalizeTask(t: Record<string, unknown>): Task {
     size: (t.size as Task['size']) ?? 'medium',
     completed_at: t.completed_at as string | null | undefined,
     user_id: t.user_id as string | undefined,
+    estimated_time_minutes: t.estimated_time_minutes as number | null | undefined,
   }
 }
 
 export default function DashboardPage() {
-  const [tasks, setTasks] = useState<Task[]>([])
-  const [subtasksByTask, setSubtasksByTask] = useState<Record<string, Subtask[]>>({})
   const [newTask, setNewTask] = useState('')
   const [newTaskPriority, setNewTaskPriority] = useState<Task['priority']>('medium')
   const [newTaskSize, setNewTaskSize] = useState<Task['size']>('medium')
+  const [newTaskEstimatedMinutes, setNewTaskEstimatedMinutes] = useState<number | null>(null)
   const [editingTask, setEditingTask] = useState<Task | null>(null)
   const [editTitle, setEditTitle] = useState('')
   const [editPriority, setEditPriority] = useState<Task['priority']>('medium')
   const [editSize, setEditSize] = useState<Task['size']>('medium')
+  const [editEstimatedMinutes, setEditEstimatedMinutes] = useState<number | null>(null)
   const [userId, setUserId] = useState<string | null>(null)
   const [userEmail, setUserEmail] = useState<string | null>(null)
-  const [userStats, setUserStats] = useState({ points: 0, streak_days: 0 })
   const [authChecked, setAuthChecked] = useState(false)
   const [taskToDelete, setTaskToDelete] = useState<Task | null>(null)
   const [focusTask, setFocusTask] = useState<Task | null>(null)
   const [focusModeOnly, setFocusModeOnly] = useState(false)
   const router = useRouter()
   const supabase = getSupabaseClient()
+  const queryClient = useQueryClient()
 
-  const fetchTasks = useCallback(
-    async (uid: string) => {
-      if (!supabase) return
-      const { data, error } = await supabase
-        .from('tasks')
-        .select('*')
-        .eq('user_id', uid)
+  const { data: tasksData } = useQuery({
+    queryKey: ['tasks', userId],
+    enabled: !!userId && !!supabase,
+    queryFn: async () => {
+      if (!supabase || !userId) return { tasks: [], subtasksByTask: {} }
+      const { data, error } = await supabase.from('tasks').select('*').eq('user_id', userId)
       if (error) {
         console.error(error)
         toast.error('Erro ao carregar tarefas')
-        return
+        return { tasks: [], subtasksByTask: {} }
       }
-      setTasks(((data as Record<string, unknown>[]) ?? []).map(normalizeTask))
-
+      const tasks = ((data as Record<string, unknown>[]) ?? []).map(normalizeTask)
       const taskIds = ((data as { id: string }[]) ?? []).map((t) => t.id)
-      if (taskIds.length === 0) {
-        setSubtasksByTask({})
-        return
+      let subtasksByTask: Record<string, Subtask[]> = {}
+      if (taskIds.length > 0) {
+        const { data: subData } = await supabase.from('subtasks').select('*').in('task_id', taskIds)
+        for (const st of (subData as Subtask[]) ?? []) {
+          if (!subtasksByTask[st.task_id]) subtasksByTask[st.task_id] = []
+          subtasksByTask[st.task_id].push(st)
+        }
       }
-      const { data: subData } = await supabase
-        .from('subtasks')
-        .select('*')
-        .in('task_id', taskIds)
-      const byTask: Record<string, Subtask[]> = {}
-      for (const st of (subData as Subtask[]) ?? []) {
-        if (!byTask[st.task_id]) byTask[st.task_id] = []
-        byTask[st.task_id].push(st)
-      }
-      setSubtasksByTask(byTask)
+      return { tasks, subtasksByTask }
     },
-    [supabase]
-  )
+  })
 
-  const fetchUserStats = useCallback(
-    async (uid: string) => {
-      if (!supabase) return
+  const { data: userStats = { points: 0, streak_days: 0 } } = useQuery({
+    queryKey: ['userStats', userId],
+    enabled: !!userId && !!supabase,
+    queryFn: async () => {
+      if (!supabase || !userId) return { points: 0, streak_days: 0 }
       const { data } = await supabase
         .from('user_stats')
         .select('points, streak_days')
-        .eq('user_id', uid)
+        .eq('user_id', userId)
         .maybeSingle()
-      if (data) setUserStats({ points: data.points ?? 0, streak_days: data.streak_days ?? 0 })
+      return { points: data?.points ?? 0, streak_days: data?.streak_days ?? 0 }
     },
-    [supabase]
-  )
+  })
+
+  const { data: profile } = useQuery({
+    queryKey: ['profile', userId],
+    enabled: !!userId && !!supabase,
+    queryFn: async () => {
+      if (!supabase || !userId) return null
+      const { data } = await supabase.from('profiles').select('*').eq('id', userId).maybeSingle()
+      return data as import('@/lib/types').Profile | null
+    },
+  })
+
+  const tasks = tasksData?.tasks ?? []
+  const subtasksByTask = tasksData?.subtasksByTask ?? {}
+  const isPro = profile?.plan_tier === 'pro'
+  const backlogCount = tasks.filter((t) => t.column === 'backlog').length
+  const canAddToBacklog = isPro || backlogCount < FREE_BACKLOG_MAX_TASKS
 
   useEffect(() => {
     const client = getSupabaseClient()
@@ -121,22 +132,14 @@ export default function DashboardPage() {
       setAuthChecked(true)
       return
     }
-    const auth = client.auth
-    async function getUser() {
-      const {
-        data: { user },
-      } = await auth.getUser()
-
+    client.auth.getUser().then(({ data: { user } }) => {
       if (user) {
         setUserId(user.id)
         setUserEmail(user.email ?? null)
-        await fetchTasks(user.id)
-        await fetchUserStats(user.id)
       }
       setAuthChecked(true)
-    }
-    getUser()
-  }, [fetchTasks, fetchUserStats])
+    })
+  }, [])
 
   useEffect(() => {
     if (!authChecked) return
@@ -157,6 +160,10 @@ export default function DashboardPage() {
       toast.error('Digite o título da tarefa')
       return
     }
+    if (!canAddToBacklog) {
+      toast.error('Seu cérebro merece foco. Para gerenciar projetos maiores, conheça o Plano Pro.')
+      return
+    }
 
     const { error } = await supabase.from('tasks').insert([
       {
@@ -165,6 +172,7 @@ export default function DashboardPage() {
         user_id: userId,
         priority: newTaskPriority,
         size: newTaskSize,
+        ...(newTaskEstimatedMinutes != null && { estimated_time_minutes: newTaskEstimatedMinutes }),
       },
     ])
 
@@ -176,7 +184,27 @@ export default function DashboardPage() {
 
     toast.success('Tarefa criada')
     setNewTask('')
-    await fetchTasks(userId)
+    setNewTaskEstimatedMinutes(null)
+    await queryClient.invalidateQueries({ queryKey: ['tasks', userId] })
+  }
+
+  async function addTaskFromText(title: string) {
+    if (!userId || !supabase) return
+    const t = title.trim()
+    if (!t) return
+    if (!canAddToBacklog) {
+      toast.error('Seu cérebro merece foco. Para gerenciar projetos maiores, conheça o Plano Pro.')
+      return
+    }
+    const { error } = await supabase.from('tasks').insert([
+      { title: t, column: 'backlog', user_id: userId, priority: 'medium', size: 'medium' },
+    ])
+    if (error) {
+      toast.error('Erro ao criar tarefa')
+      return
+    }
+    toast.success('Tarefa adicionada ao Backlog')
+    await queryClient.invalidateQueries({ queryKey: ['tasks', userId] })
   }
 
   async function addSubtask(taskId: string, title: string) {
@@ -187,8 +215,7 @@ export default function DashboardPage() {
       toast.error('Erro ao adicionar subtarefa')
       return
     }
-    const task = tasks.find((t) => t.id === taskId)
-    if (task) await fetchTasks(userId!)
+    await queryClient.invalidateQueries({ queryKey: ['tasks', userId] })
   }
 
   async function toggleSubtask(subtaskId: string, done: boolean) {
@@ -198,7 +225,7 @@ export default function DashboardPage() {
       console.error(error)
       return
     }
-    await fetchTasks(userId!)
+    await queryClient.invalidateQueries({ queryKey: ['tasks', userId] })
   }
 
   async function handleFocusComplete(taskId: string, durationMinutes: number) {
@@ -208,6 +235,7 @@ export default function DashboardPage() {
     ])
     if (error) console.error(error)
     setFocusTask(null)
+    await queryClient.invalidateQueries({ queryKey: ['userStats', userId] })
   }
 
   async function confirmDelete() {
@@ -224,7 +252,7 @@ export default function DashboardPage() {
     }
 
     toast.success('Tarefa removida')
-    await fetchTasks(userId)
+    await queryClient.invalidateQueries({ queryKey: ['tasks', userId] })
   }
 
   function openEditModal(task: Task) {
@@ -232,6 +260,7 @@ export default function DashboardPage() {
     setEditTitle(task.title)
     setEditPriority(task.priority ?? 'medium')
     setEditSize(task.size ?? 'medium')
+    setEditEstimatedMinutes(task.estimated_time_minutes ?? null)
   }
 
   async function saveEdit() {
@@ -244,6 +273,7 @@ export default function DashboardPage() {
         title: editTitle.trim(),
         priority: editPriority,
         size: editSize,
+        estimated_time_minutes: editEstimatedMinutes,
       })
       .eq('id', editingTask.id)
 
@@ -256,7 +286,7 @@ export default function DashboardPage() {
     toast.success('Tarefa atualizada')
     setEditingTask(null)
     setEditTitle('')
-    if (userId) await fetchTasks(userId)
+    if (userId) await queryClient.invalidateQueries({ queryKey: ['tasks', userId] })
   }
 
   async function onDragEnd(result: DropResult) {
@@ -281,14 +311,7 @@ export default function DashboardPage() {
       }
     }
 
-    const previousTasks = tasks
-    setTasks((prev) =>
-      prev.map((t) =>
-        t.id === taskId ? { ...t, column: newColumn } : t
-      )
-    )
-
-    const task = tasks.find((t) => t.id === taskId)
+    const task = tasks.find((t: Task) => t.id === taskId)
     const isMovingToDone = newColumn === 'done'
     const updatePayload: Record<string, unknown> = { column: newColumn }
     if (isMovingToDone) updatePayload.completed_at = new Date().toISOString()
@@ -300,7 +323,6 @@ export default function DashboardPage() {
 
     if (error) {
       console.error(error)
-      setTasks(previousTasks)
       toast.error('Erro ao mover tarefa')
       return
     }
@@ -329,10 +351,10 @@ export default function DashboardPage() {
         },
         { onConflict: 'user_id' }
       )
-      await fetchUserStats(userId)
+      await queryClient.invalidateQueries({ queryKey: ['userStats', userId] })
     }
 
-    if (userId) await fetchTasks(userId)
+    if (userId) await queryClient.invalidateQueries({ queryKey: ['tasks', userId] })
   }
 
   if (!supabase) {
@@ -351,6 +373,7 @@ export default function DashboardPage() {
     <main className="min-h-screen bg-gray-950 text-white">
       <Toaster position="top-right" />
 
+      <div aria-hidden={!!focusTask} className={focusTask ? 'pointer-events-none select-none' : ''}>
       <header className="border-b border-gray-800 bg-gray-900 px-6 py-4 flex flex-wrap justify-between items-center gap-4">
         <h1 className="text-xl font-semibold">Meu Foco do Dia</h1>
         <div className="flex items-center gap-3 flex-wrap">
@@ -367,6 +390,12 @@ export default function DashboardPage() {
             className="text-sm text-gray-300 hover:text-white underline"
           >
             Histórico
+          </Link>
+          <Link
+            href="/report"
+            className="text-sm text-gray-300 hover:text-white underline"
+          >
+            Relatório semanal
           </Link>
           <button
             type="button"
@@ -388,7 +417,11 @@ export default function DashboardPage() {
       </header>
 
       <section className="p-6">
-        <DailyNotesSection userId={userId} getSupabase={getSupabaseClient} />
+        <DailyNotesSection
+          userId={userId}
+          getSupabase={getSupabaseClient}
+          onConvertToTask={addTaskFromText}
+        />
 
         <FocusNotifications
           todayCount={tasks.filter((t) => t.column === 'today').length}
@@ -429,13 +462,30 @@ export default function DashboardPage() {
             <option value="medium">Média (10 pts)</option>
             <option value="large">Grande (20 pts)</option>
           </select>
+          <select
+            value={newTaskEstimatedMinutes ?? ''}
+            onChange={(e) => setNewTaskEstimatedMinutes(e.target.value === '' ? null : Number(e.target.value))}
+            className="bg-gray-800 border border-gray-700 p-3 rounded-lg text-white text-sm"
+            aria-label="Tempo estimado"
+          >
+            <option value="">Sem estimativa</option>
+            {ESTIMATED_TIME_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
+          </select>
           <button
             onClick={addTask}
-            className="bg-blue-600 hover:bg-blue-700 px-5 py-3 rounded-lg font-medium transition"
+            className="bg-blue-600 hover:bg-blue-700 px-5 py-3 rounded-lg font-medium transition disabled:opacity-70"
+            disabled={!canAddToBacklog}
           >
             Adicionar
           </button>
         </div>
+        {!isPro && (
+          <p className="text-xs text-gray-500 mb-2">
+            Backlog: {backlogCount}/{FREE_BACKLOG_MAX_TASKS} tarefas (Plano Free)
+          </p>
+        )}
 
         <DragDropContext onDragEnd={onDragEnd}>
           <div className={`grid gap-6 ${focusModeOnly ? 'grid-cols-1 md:grid-cols-2' : 'grid-cols-1 md:grid-cols-4'}`}>
@@ -533,6 +583,19 @@ export default function DashboardPage() {
                     <option value="large">Grande (20)</option>
                   </select>
                 </div>
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Tempo estimado</label>
+                  <select
+                    value={editEstimatedMinutes ?? ''}
+                    onChange={(e) => setEditEstimatedMinutes(e.target.value === '' ? null : Number(e.target.value))}
+                    className="bg-gray-800 border border-gray-700 p-2 rounded w-full text-white text-sm"
+                  >
+                    <option value="">Sem estimativa</option>
+                    {ESTIMATED_TIME_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>{opt.label}</option>
+                    ))}
+                  </select>
+                </div>
               </div>
               <div className="flex justify-end gap-2">
                 <button
@@ -550,14 +613,6 @@ export default function DashboardPage() {
               </div>
             </div>
           </div>
-        )}
-
-        {focusTask && (
-          <FocusTimer
-            task={focusTask}
-            onClose={() => setFocusTask(null)}
-            onComplete={handleFocusComplete}
-          />
         )}
 
         {taskToDelete && (
@@ -592,6 +647,15 @@ export default function DashboardPage() {
           </div>
         )}
       </section>
+      </div>
+
+      {focusTask && (
+        <FocusTimer
+          task={focusTask}
+          onClose={() => setFocusTask(null)}
+          onComplete={handleFocusComplete}
+        />
+      )}
     </main>
   )
 }
