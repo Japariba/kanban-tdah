@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState, useRef } from 'react'
+import { formatDateKeyInTimeZone } from '@/lib/date'
 
 type DailyNotesSectionProps = {
   userId: string
@@ -15,7 +16,7 @@ export default function DailyNotesSection({ userId, getSupabase, onConvertToTask
   const [selectedText, setSelectedText] = useState('')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
-  const today = new Date().toISOString().slice(0, 10)
+  const today = formatDateKeyInTimeZone(new Date())
 
   useEffect(() => {
     const supabase = getSupabase()

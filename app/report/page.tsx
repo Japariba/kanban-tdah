@@ -18,23 +18,24 @@ type WeeklyReport = {
 }
 
 export default function ReportPage() {
+  const supabase = getSupabaseClient()
   const [reports, setReports] = useState<WeeklyReport[]>([])
   const [userId, setUserId] = useState<string | null>(null)
-  const [authChecked, setAuthChecked] = useState(false)
+  const [authChecked, setAuthChecked] = useState(() => !supabase)
   const router = useRouter()
-  const supabase = getSupabaseClient()
 
   useEffect(() => {
-    const client = getSupabaseClient()
-    if (!client) {
-      setAuthChecked(true)
-      return
-    }
-    client.auth.getUser().then(({ data: { user } }) => {
+    if (!supabase) return
+    let active = true
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      if (!active) return
       if (user) setUserId(user.id)
       setAuthChecked(true)
     })
-  }, [])
+    return () => {
+      active = false
+    }
+  }, [supabase])
 
   useEffect(() => {
     if (!authChecked) return

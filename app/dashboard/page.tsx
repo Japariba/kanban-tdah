@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { getSupabaseClient } from '@/lib/supabaseClient'
 import {
   DragDropContext,
@@ -18,6 +18,7 @@ import TaskCard from './components/TaskCard'
 import FocusTimer from './components/FocusTimer'
 import DailyNotesSection from './components/DailyNotesSection'
 import FocusNotifications from './components/FocusNotifications'
+import { formatDateKeyInTimeZone } from '@/lib/date'
 
 const COLUMNS = ['backlog', 'today', 'doing', 'done'] as const
 
@@ -52,6 +53,7 @@ function normalizeTask(t: Record<string, unknown>): Task {
 }
 
 export default function DashboardPage() {
+  const supabase = getSupabaseClient()
   const [newTask, setNewTask] = useState('')
   const [newTaskPriority, setNewTaskPriority] = useState<Task['priority']>('medium')
   const [newTaskSize, setNewTaskSize] = useState<Task['size']>('medium')
@@ -63,12 +65,11 @@ export default function DashboardPage() {
   const [editEstimatedMinutes, setEditEstimatedMinutes] = useState<number | null>(null)
   const [userId, setUserId] = useState<string | null>(null)
   const [userEmail, setUserEmail] = useState<string | null>(null)
-  const [authChecked, setAuthChecked] = useState(false)
+  const [authChecked, setAuthChecked] = useState(() => !supabase)
   const [taskToDelete, setTaskToDelete] = useState<Task | null>(null)
   const [focusTask, setFocusTask] = useState<Task | null>(null)
   const [focusModeOnly, setFocusModeOnly] = useState(false)
   const router = useRouter()
-  const supabase = getSupabaseClient()
   const queryClient = useQueryClient()
 
   const { data: tasksData } = useQuery({
@@ -84,7 +85,7 @@ export default function DashboardPage() {
       }
       const tasks = ((data as Record<string, unknown>[]) ?? []).map(normalizeTask)
       const taskIds = ((data as { id: string }[]) ?? []).map((t) => t.id)
-      let subtasksByTask: Record<string, Subtask[]> = {}
+      const subtasksByTask: Record<string, Subtask[]> = {}
       if (taskIds.length > 0) {
         const { data: subData } = await supabase.from('subtasks').select('*').in('task_id', taskIds)
         for (const st of (subData as Subtask[]) ?? []) {
@@ -127,19 +128,20 @@ export default function DashboardPage() {
   const canAddToBacklog = isPro || backlogCount < FREE_BACKLOG_MAX_TASKS
 
   useEffect(() => {
-    const client = getSupabaseClient()
-    if (!client) {
-      setAuthChecked(true)
-      return
-    }
-    client.auth.getUser().then(({ data: { user } }) => {
+    if (!supabase) return
+    let active = true
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      if (!active) return
       if (user) {
         setUserId(user.id)
         setUserEmail(user.email ?? null)
       }
       setAuthChecked(true)
     })
-  }, [])
+    return () => {
+      active = false
+    }
+  }, [supabase])
 
   useEffect(() => {
     if (!authChecked) return
@@ -294,6 +296,8 @@ export default function DashboardPage() {
 
     const taskId = result.draggableId
     const newColumn = result.destination.droppableId as Task['column']
+    const task = tasks.find((t: Task) => t.id === taskId)
+    if (!task || task.column === newColumn) return
 
     if (newColumn === 'today') {
       const todayCount = tasks.filter((t) => t.column === 'today').length
@@ -311,10 +315,12 @@ export default function DashboardPage() {
       }
     }
 
-    const task = tasks.find((t: Task) => t.id === taskId)
     const isMovingToDone = newColumn === 'done'
-    const updatePayload: Record<string, unknown> = { column: newColumn }
-    if (isMovingToDone) updatePayload.completed_at = new Date().toISOString()
+    const wasDone = task.column === 'done'
+    const updatePayload: Record<string, unknown> = {
+      column: newColumn,
+      completed_at: isMovingToDone ? new Date().toISOString() : null,
+    }
 
     const { error } = await supabase
       .from('tasks')
@@ -327,10 +333,10 @@ export default function DashboardPage() {
       return
     }
 
-    if (isMovingToDone && task && userId && supabase) {
+    if (isMovingToDone && !wasDone && userId && supabase) {
       const size = task.size ?? 'medium'
       const points = POINTS_BY_SIZE[size]
-      const today = new Date().toISOString().slice(0, 10)
+      const today = formatDateKeyInTimeZone(new Date())
       const { data: stats } = await supabase
         .from('user_stats')
         .select('points, streak_days, last_activity_date')
@@ -339,7 +345,7 @@ export default function DashboardPage() {
       const prevPoints = (stats?.points as number) ?? 0
       const prevStreak = (stats?.streak_days as number) ?? 0
       const lastDate = stats?.last_activity_date as string | null
-      const yesterday = new Date(Date.now() - 864e5).toISOString().slice(0, 10)
+      const yesterday = formatDateKeyInTimeZone(new Date(Date.now() - 864e5))
       const newStreak = lastDate === yesterday ? prevStreak + 1 : lastDate === today ? prevStreak : 1
       await supabase.from('user_stats').upsert(
         {
@@ -482,9 +488,14 @@ export default function DashboardPage() {
           </button>
         </div>
         {!isPro && (
-          <p className="text-xs text-gray-500 mb-2">
-            Backlog: {backlogCount}/{FREE_BACKLOG_MAX_TASKS} tarefas (Plano Free)
-          </p>
+          <div id="pro" className="mb-3 rounded-lg border border-emerald-700/40 bg-emerald-900/20 p-3">
+            <p className="text-xs text-gray-300 mb-1">
+              Backlog: {backlogCount}/{FREE_BACKLOG_MAX_TASKS} tarefas (Plano Free)
+            </p>
+            <p className="text-xs text-emerald-300">
+              Para projetos maiores, faça upgrade para o Plano Pro.
+            </p>
+          </div>
         )}
 
         <DragDropContext onDragEnd={onDragEnd}>

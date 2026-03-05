@@ -6,7 +6,6 @@ type FocusNotificationsProps = {
 }
 
 const MAX_TODAY = 3
-const MAX_DOING = 1
 
 export default function FocusNotifications({ todayCount, doingCount }: FocusNotificationsProps) {
   const tooManyToday = todayCount > MAX_TODAY

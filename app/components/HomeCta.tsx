@@ -19,20 +19,22 @@ export default function HomeCta({
   loggedInHref = '/dashboard',
   className = '',
 }: HomeCtaProps) {
+  const supabase = getSupabaseClient()
   const [isLoggedIn, setIsLoggedIn] = useState(false)
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(() => !!supabase)
 
   useEffect(() => {
-    const client = getSupabaseClient()
-    if (!client) {
-      setLoading(false)
-      return
-    }
-    client.auth.getUser().then(({ data: { user } }) => {
+    if (!supabase) return
+    let active = true
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      if (!active) return
       setIsLoggedIn(!!user)
       setLoading(false)
     })
-  }, [])
+    return () => {
+      active = false
+    }
+  }, [supabase])
 
   const href = loading ? loggedOutHref : (isLoggedIn ? loggedInHref : loggedOutHref)
   const label = loading ? loggedOutLabel : (isLoggedIn ? loggedInLabel : loggedOutLabel)

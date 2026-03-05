@@ -14,7 +14,6 @@ type HistoryTask = {
   estimated_time_minutes?: number | null
 }
 
-type FocusTotal = { task_id: string; total_minutes: number }
 
 /** Precisão = 100 - erro percentual (quanto menor |estimado - real|, melhor) */
 function precisionScore(estimated: number, actual: number): number {
@@ -24,13 +23,13 @@ function precisionScore(estimated: number, actual: number): number {
 }
 
 export default function HistoryPage() {
+  const supabase = getSupabaseClient()
   const [tasks, setTasks] = useState<HistoryTask[]>([])
   const [focusTotals, setFocusTotals] = useState<Record<string, number>>({})
   const [profile, setProfile] = useState<{ plan_tier: string } | null>(null)
   const [userId, setUserId] = useState<string | null>(null)
-  const [authChecked, setAuthChecked] = useState(false)
+  const [authChecked, setAuthChecked] = useState(() => !supabase)
   const router = useRouter()
-  const supabase = getSupabaseClient()
 
   const precisionData = useMemo(() => {
     const withEstimate = tasks.filter(
@@ -45,16 +44,17 @@ export default function HistoryPage() {
   }, [tasks, focusTotals])
 
   useEffect(() => {
-    const client = getSupabaseClient()
-    if (!client) {
-      setAuthChecked(true)
-      return
-    }
-    client.auth.getUser().then(({ data: { user } }) => {
+    if (!supabase) return
+    let active = true
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      if (!active) return
       if (user) setUserId(user.id)
       setAuthChecked(true)
     })
-  }, [])
+    return () => {
+      active = false
+    }
+  }, [supabase])
 
   useEffect(() => {
     if (!authChecked) return
